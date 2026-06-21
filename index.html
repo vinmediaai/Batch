@@ -168,6 +168,10 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--text);min-
 .mbtn:disabled{opacity:.55;cursor:not-allowed}
 .mback{background:none;border:none;color:var(--dim);font-family:'Outfit',sans-serif;font-size:.82rem;cursor:pointer;display:flex;align-items:center;gap:4px;margin-bottom:14px;padding:0}
 .mback:hover{color:var(--accent)}
+.star-row{display:flex;gap:8px;justify-content:center;margin:6px 0 18px}
+.star{font-size:2.1rem;color:var(--border);cursor:pointer;transition:.15s;line-height:1}
+.star:hover{transform:scale(1.12)}
+.star.on{color:#f59e0b}
 
 /* toast */
 .toast-el{position:fixed;bottom:24px;right:24px;background:#1a1d2e;color:#fff;padding:12px 20px;border-radius:var(--rx);font-size:.82rem;font-weight:600;z-index:9999;transform:translateY(100px);opacity:0;transition:.3s;max-width:300px}
@@ -1035,13 +1039,13 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--text);min-
       <div class="detail-item" style="grid-column:1/-1"><span class="detail-lbl">📧 Delivery Email</span><span class="detail-val" id="dEmail" style="color:var(--accent);font-size:.82rem">—</span></div>
     </div>
 
-    <!-- Done: image links -->
+    <!-- Done: image preview grid -->
     <div id="doneSection" style="display:none">
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin:14px 0 10px">
         <div style="font-size:.85rem;font-weight:600;color:var(--green)">✅ Generation complete — <span id="doneCount">0</span> images ready</div>
         <button class="dl-all-btn" onclick="downloadAllCurrent()">⬇ Download All</button>
       </div>
-      <div id="imageLinks" style="display:flex;flex-direction:column;gap:6px"></div>
+      <div id="imageLinks" class="jgrid"></div>
     </div>
 
     <!-- Failed -->
@@ -1113,7 +1117,7 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--text);min-
       <input class="minp" id="liPass" type="password" placeholder="Password" autocomplete="current-password">
 
       <!-- Turnstile renders here, signup mode only -->
-      <div class="tsWidget" id="tsWidget" style="display:none"></div>
+      <div class="tsWidget" id="tsWidget"></div>
 
       <button class="mbtn" id="credBtn" onclick="doSignIn()">Sign In</button>
       <div class="mmsg" id="liMsg"></div>
@@ -1130,6 +1134,25 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--text);min-
       <div class="resend-row">Didn't get a code? <a id="resendLink" onclick="doResendCode()">Resend code</a></div>
     </div>
 
+  </div>
+</div>
+
+<!-- FEEDBACK MODAL — shown before "Download All" completes -->
+<div class="moverlay" id="feedbackModal">
+  <div class="mcrd">
+    <button class="mxbtn" onclick="skipFeedbackAndDownload()">✕</button>
+    <div class="mtitle">How did these photos turn out?</div>
+    <div class="star-row" id="starRow">
+      <span class="star" data-v="1" onclick="setRating(1)">★</span>
+      <span class="star" data-v="2" onclick="setRating(2)">★</span>
+      <span class="star" data-v="3" onclick="setRating(3)">★</span>
+      <span class="star" data-v="4" onclick="setRating(4)">★</span>
+      <span class="star" data-v="5" onclick="setRating(5)">★</span>
+    </div>
+    <textarea class="minp" id="fbText" rows="3" placeholder="Anything we should improve? (optional)" style="resize:vertical;font-family:'Outfit',sans-serif"></textarea>
+    <button class="mbtn" id="fbSubmitBtn" onclick="submitFeedbackAndDownload()">Submit &amp; Download</button>
+    <div class="mmsg" id="fbMsg"></div>
+    <div class="mswitch"><a onclick="skipFeedbackAndDownload()">Skip &amp; download without feedback</a></div>
   </div>
 </div>
 
@@ -1178,7 +1201,7 @@ const SB_KEY     = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSI
 const WEBHOOK_A  = 'https://vinsnap-init-gdsqg4fv7q-uc.a.run.app/';
 const WEBHOOK_B  = 'https://vinsnap-process-gdsqg4fv7q-uc.a.run.app/';
 const GCS_BUCKET = 'vinsnap-store';
-const TURNSTILE_SITE_KEY = '0x4AAAAAADofEaJCDdqf1MWY'; // ← replace with the Site Key from Cloudflare Turnstile dashboard
+const TURNSTILE_SITE_KEY = 'YOUR_TURNSTILE_SITE_KEY'; // ← replace with the Site Key from Cloudflare Turnstile dashboard
 const { createClient } = window.supabase;
 const sb = createClient(SB_URL, SB_KEY);
 
@@ -1558,9 +1581,8 @@ function switchAuthMode(mode) {
   document.getElementById('credBtn').textContent   = mode==='signin' ? 'Sign In' : 'Create Account';
   document.getElementById('credBtn').onclick       = mode==='signin' ? doSignIn : doSignUp;
   document.getElementById('liPass').autocomplete   = mode==='signin' ? 'current-password' : 'new-password';
-  document.getElementById('tsWidget').style.display = mode==='signup' ? 'flex' : 'none';
   liMsg('', '');
-  if (mode === 'signup') _renderTurnstile(); else _resetTurnstile();
+  _renderTurnstile(); // always needed — Supabase's captcha protection covers sign-in too, not just sign-up
 }
 
 function _showVerifyView(email) {
@@ -1579,7 +1601,12 @@ async function doSignIn() {
   const email = document.getElementById('liEmail').value.trim();
   const pass  = document.getElementById('liPass').value;
   if (!email||!pass) { liMsg('Please fill in all fields.','err'); return; }
-  const {error} = await sb.auth.signInWithPassword({email, password:pass});
+  if (!_tsToken) { liMsg('Please complete the verification check.','err'); return; }
+  const {error} = await sb.auth.signInWithPassword({
+    email, password: pass,
+    options: { captchaToken: _tsToken }
+  });
+  _resetTurnstile(); // single-use token — must reset after every attempt, success or fail
   if (error) liMsg(error.message,'err');
 }
 
@@ -2196,11 +2223,14 @@ function showDoneSection(job) {
     const imgNum = img.image_num || img.imageNum || (parseInt(imgIdx)+1);
     const fname  = `${pName}_${shotType||'img'}${imgNum > 1 ? '_img'+imgNum : ''}.jpg`;
     const label  = `${typeLabels[shotType] || (shotType ? shotType : 'Image '+(parseInt(imgIdx)+1))}`;
-    const row = document.createElement('div');
-    row.className = 'img-link';
-    row.innerHTML = `<div><div class="img-link-label">${label}</div><div class="img-link-sub">${url.split('/').pop()}</div></div>`
-      + `<button class="dl-btn" onclick="blobDownload('${url}','${fname}',this)">⬇ Download</button>`;
-    container.appendChild(row);
+    const tile = document.createElement('div');
+    tile.className = 'jtile';
+    const su = url.replace(/"/g,'&quot;');
+    tile.innerHTML =
+        `<img class="jtile-img" src="${su}" loading="lazy" onerror="this.style.display='none'">`
+      + `<div class="jtile-foot"><span class="jtile-lbl">${label}</span>`
+      + `<button class="dl-btn" onclick="blobDownload('${url}','${fname}',this)">⬇</button></div>`;
+    container.appendChild(tile);
   });
 
   // Update the history row to completed
@@ -2262,7 +2292,73 @@ async function blobDownload(url, fname, btnEl) {
 
 function downloadAllCurrent() {
   if (!_currentImages.length) { toast('No images ready'); return; }
-  _blobQueue(_currentImages, _currentJobId || 'job');
+  openFeedbackModal(_currentImages, _currentJobId || 'job');
+}
+
+// ══ FEEDBACK MODAL — collected before "Download All" completes ═══════
+// job_feedback columns: id, job_id, user_email, rating, feedback, created_at
+// RLS on job_feedback is INSERT-only (WITH CHECK true) — safe to insert
+// directly from the frontend with the anon key.
+let _fbRating  = 0;
+let _fbImages  = [];
+let _fbJobId   = '';
+
+function openFeedbackModal(images, jobId) {
+  _fbImages = images;
+  _fbJobId  = jobId;
+  _fbRating = 0;
+  document.querySelectorAll('#starRow .star').forEach(s => s.classList.remove('on'));
+  document.getElementById('fbText').value = '';
+  document.getElementById('fbMsg').textContent = '';
+  document.getElementById('fbSubmitBtn').disabled = false;
+  document.getElementById('fbSubmitBtn').textContent = 'Submit & Download';
+  document.getElementById('feedbackModal').classList.add('open');
+}
+
+function setRating(n) {
+  _fbRating = n;
+  document.querySelectorAll('#starRow .star').forEach(s => {
+    s.classList.toggle('on', parseInt(s.dataset.v) <= n);
+  });
+}
+
+async function submitFeedbackAndDownload() {
+  if (!_fbRating) {
+    document.getElementById('fbMsg').textContent = 'Please select a star rating, or use "Skip" below.';
+    document.getElementById('fbMsg').className = 'mmsg err';
+    return;
+  }
+  const btn = document.getElementById('fbSubmitBtn');
+  btn.disabled = true; btn.textContent = 'Submitting…';
+
+  try {
+    await fetch(`${SB_URL}/rest/v1/job_feedback`, {
+      method: 'POST',
+      headers: {
+        'apikey': SB_KEY,
+        'Authorization': 'Bearer ' + SB_KEY,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=minimal'
+      },
+      body: JSON.stringify({
+        job_id: _fbJobId,
+        user_email: user ? user.email : null,
+        rating: _fbRating,
+        feedback: document.getElementById('fbText').value.trim() || null
+      })
+    });
+  } catch(e) {
+    console.warn('feedback insert failed:', e);
+    // Don't block the download on a feedback-table failure.
+  }
+
+  document.getElementById('feedbackModal').classList.remove('open');
+  _blobQueue(_fbImages, _fbJobId);
+}
+
+function skipFeedbackAndDownload() {
+  document.getElementById('feedbackModal').classList.remove('open');
+  _blobQueue(_fbImages, _fbJobId);
 }
 
 function _blobQueue(images, jobSuffix) {
